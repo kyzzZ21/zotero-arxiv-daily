@@ -49,6 +49,16 @@ def normalize_keywords(keywords: list[str] | ListConfig | None) -> list[str]:
     return normalized
 
 
+def normalize_keyword_groups(keyword_groups) -> dict[str, list[str]]:
+    if keyword_groups is None:
+        return {}
+
+    normalized = {}
+    for group_name, keywords in keyword_groups.items():
+        normalized[group_name] = normalize_keywords(keywords)
+    return {group_name: keywords for group_name, keywords in normalized.items() if keywords}
+
+
 def paper_matches_keywords(paper: Paper, keywords: list[str]) -> bool:
     if not keywords:
         return True
@@ -57,12 +67,36 @@ def paper_matches_keywords(paper: Paper, keywords: list[str]) -> bool:
     return any(keyword in text for keyword in keywords)
 
 
+def paper_matches_keyword_groups(
+    paper: Paper,
+    keyword_groups: dict[str, list[str]],
+    require_all_groups: bool,
+) -> bool:
+    if not keyword_groups:
+        return True
+
+    text = f"{paper.title or ''}\n{paper.abstract or ''}".lower()
+    group_matches = [
+        any(keyword in text for keyword in keywords)
+        for keywords in keyword_groups.values()
+    ]
+    if require_all_groups:
+        return all(group_matches)
+    return any(group_matches)
+
+
 class Executor:
     def __init__(self, config:DictConfig):
         self.config = config
         self.include_path_patterns = normalize_path_patterns(config.zotero.include_path, "include_path")
         self.ignore_path_patterns = normalize_path_patterns(config.zotero.ignore_path, "ignore_path")
         filter_config = config.get("filter")
+        self.keyword_groups = normalize_keyword_groups(
+            filter_config.get("keyword_groups") if filter_config else None
+        )
+        self.require_all_keyword_groups = (
+            bool(filter_config.get("require_all_groups", True)) if filter_config else True
+        )
         self.include_keywords = normalize_keywords(
             filter_config.get("include_keywords") if filter_config else None
         )
@@ -138,6 +172,20 @@ class Executor:
             logger.info(f"Retrieved {len(papers)} {source} papers")
             all_papers.extend(papers)
         logger.info(f"Total {len(all_papers)} papers retrieved from all sources")
+        if self.keyword_groups and len(all_papers) > 0:
+            total_papers = len(all_papers)
+            all_papers = [
+                paper for paper in all_papers
+                if paper_matches_keyword_groups(
+                    paper,
+                    self.keyword_groups,
+                    self.require_all_keyword_groups,
+                )
+            ]
+            logger.info(
+                f"Keyword group filter kept {len(all_papers)}/{total_papers} papers "
+                f"using keyword_groups: {self.keyword_groups}"
+            )
         if self.include_keywords and len(all_papers) > 0:
             total_papers = len(all_papers)
             all_papers = [
