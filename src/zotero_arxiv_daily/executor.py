@@ -3,7 +3,7 @@ from pyzotero import zotero
 from omegaconf import DictConfig, ListConfig
 from .utils import glob_match
 from .retriever import get_retriever_cls
-from .protocol import CorpusPaper
+from .protocol import CorpusPaper, Paper
 import random
 from datetime import datetime
 from .reranker import get_reranker_cls
@@ -29,11 +29,43 @@ def normalize_path_patterns(patterns: list[str] | ListConfig | None, config_key:
     return list(patterns)
 
 
+def normalize_keywords(keywords: list[str] | ListConfig | None) -> list[str]:
+    if keywords is None:
+        return []
+
+    if not isinstance(keywords, (list, ListConfig)):
+        raise TypeError(
+            "config.filter.include_keywords must be a list of strings or omitted, "
+            'for example ["soil", "rhizosphere", "rice"].'
+        )
+
+    normalized = []
+    for keyword in keywords:
+        if not isinstance(keyword, str):
+            raise TypeError("config.filter.include_keywords must contain only strings.")
+        keyword = keyword.strip().lower()
+        if keyword:
+            normalized.append(keyword)
+    return normalized
+
+
+def paper_matches_keywords(paper: Paper, keywords: list[str]) -> bool:
+    if not keywords:
+        return True
+
+    text = f"{paper.title or ''}\n{paper.abstract or ''}".lower()
+    return any(keyword in text for keyword in keywords)
+
+
 class Executor:
     def __init__(self, config:DictConfig):
         self.config = config
         self.include_path_patterns = normalize_path_patterns(config.zotero.include_path, "include_path")
         self.ignore_path_patterns = normalize_path_patterns(config.zotero.ignore_path, "ignore_path")
+        filter_config = config.get("filter")
+        self.include_keywords = normalize_keywords(
+            filter_config.get("include_keywords") if filter_config else None
+        )
         self.retrievers = {
             source: get_retriever_cls(source)(config) for source in config.executor.source
         }
@@ -106,6 +138,16 @@ class Executor:
             logger.info(f"Retrieved {len(papers)} {source} papers")
             all_papers.extend(papers)
         logger.info(f"Total {len(all_papers)} papers retrieved from all sources")
+        if self.include_keywords and len(all_papers) > 0:
+            total_papers = len(all_papers)
+            all_papers = [
+                paper for paper in all_papers
+                if paper_matches_keywords(paper, self.include_keywords)
+            ]
+            logger.info(
+                f"Keyword filter kept {len(all_papers)}/{total_papers} papers "
+                f"using include_keywords: {self.include_keywords}"
+            )
         reranked_papers = []
         if len(all_papers) > 0:
             logger.info("Reranking papers...")
